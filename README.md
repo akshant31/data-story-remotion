@@ -68,6 +68,12 @@ that reel. Add a `--cover` flag for thumbnails:
 node scripts/from-sheet.mjs reels.xlsx --cover
 ```
 
+Render multiple reels at once with `--concurrency=N` (default: 2):
+
+```bash
+node scripts/from-sheet.mjs reels-2weeks.xlsx --concurrency=4
+```
+
 ### Voiceover
 
 Each sheet has a **Narration** column — one voiceover line per clip. Every time

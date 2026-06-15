@@ -101,6 +101,7 @@ node scripts/from-sheet.mjs reels-2weeks.xlsx
 node scripts/from-sheet.mjs reels.xlsx --dry
 node scripts/from-sheet.mjs reels.xlsx --cover   # also render a cover.png thumbnail
 node scripts/from-sheet.mjs reels.xlsx --no-fit  # ignore voiceover timing when fitting durations
+node scripts/from-sheet.mjs reels.xlsx --concurrency=4  # render 4 reels in parallel (default: 2)
 
 node scripts/voiceover.mjs reels-2weeks.xlsx
 node scripts/voiceover.mjs reels-2weeks.xlsx --dry

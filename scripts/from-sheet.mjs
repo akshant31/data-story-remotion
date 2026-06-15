@@ -2,18 +2,24 @@
 /**
  * Spreadsheet -> Reels.
  *
- *   node scripts/from-sheet.mjs [file.xlsx] [--dry] [--cover]
+ *   node scripts/from-sheet.mjs [file.xlsx] [--dry] [--cover] [--no-fit] [--concurrency=N]
  *
  *   (default file: reels.xlsx)
- *   --dry    parse + write props JSON only, don't render videos
- *   --cover  also export a cover.png thumbnail per reel
+ *   --dry            parse + write props JSON only, don't render videos
+ *   --cover          also export a cover.png thumbnail per reel
+ *   --no-fit         ignore voiceover timing when fitting durations
+ *   --concurrency=N  render N reels in parallel (default: 2)
  *
  * Each row of the "Reels" sheet becomes one clip. Rows are grouped by the
  * "Reel" column; each group renders to out/<reel>.mp4.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+import { cpus } from "node:os";
 import * as XLSX from "xlsx";
+
+const execAsync = promisify(exec);
 
 const args = process.argv.slice(2);
 const file = args.find((a) => !a.startsWith("--")) || "reels.xlsx";
@@ -21,6 +27,12 @@ const DRY = args.includes("--dry");
 const COVER = args.includes("--cover");
 const NOFIT = args.includes("--no-fit");
 const BRAND = "DATA STORY";
+
+const concurrencyArg = args.find((a) => a.startsWith("--concurrency="));
+const DEFAULT_CONCURRENCY = Math.max(1, Math.min(2, cpus().length - 1));
+const CONCURRENCY = concurrencyArg
+  ? Math.max(1, parseInt(concurrencyArg.split("=")[1], 10) || DEFAULT_CONCURRENCY)
+  : DEFAULT_CONCURRENCY;
 
 if (!existsSync(file)) {
   console.error(`✗ Can't find ${file}. Pass a path: node scripts/from-sheet.mjs path/to/reels.xlsx`);
@@ -92,7 +104,7 @@ function toClip(row, n) {
     case "outro":
       return { ...base, message: str(row["Title"]), cta: str(row["Subtitle"]) || undefined, handle: str(row["Handle"]) || undefined };
     default:
-      throw new Error(`Row ${n}: unknown Type "${row["Type"]}". Use one of: title, stat, bars, pie, comparison, ranking, outro.`);
+      throw new Error(`Row ${n}: unknown Type "${row["Type"]}." Use one of: title, stat, bars, pie, comparison, ranking, outro.`);
   }
 }
 
@@ -143,62 +155,149 @@ const tc = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2
 mkdirSync("out/props", { recursive: true });
 mkdirSync("out/scripts", { recursive: true });
 
-for (const [name, { clips, script, music, musicVolume }] of reels) {
-  const slug = name.replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
+/**
+ * Tiny p-limit style helper. Runs at most `concurrency` tasks at once.
+ */
+function pLimit(concurrency) {
+  const queue = [];
+  let activeCount = 0;
 
-  // Attach voiceover audio if it's been generated for this reel. Audio never
-  // SHORTENS a clip (your pacing is the floor); it only extends a clip whose
-  // narration runs longer than its set duration. Use --no-fit to ignore length.
-  const timingPath = `public/vo/${slug}/timing.json`;
-  if (existsSync(timingPath)) {
-    try {
-      const timing = JSON.parse(readFileSync(timingPath, "utf8")).clips || [];
-      const byIndex = new Map(timing.map((t) => [t.index, t]));
-      clips.forEach((clip, n) => {
-        const t = byIndex.get(n + 1);
-        if (t && t.file) {
-          clip.vo = `vo/${slug}/${t.file}`;
-          if (!NOFIT && t.seconds) {
-            clip.durationInSeconds = Math.max(clip.durationInSeconds, Math.round((t.seconds + 0.5) * 100) / 100);
-          }
-        }
+  const processNext = () => {
+    if (queue.length === 0 || activeCount >= concurrency) return;
+    const { task, resolve, reject } = queue.shift();
+    activeCount++;
+    task()
+      .then(resolve, reject)
+      .finally(() => {
+        activeCount--;
+        processNext();
       });
-    } catch (e) {
-      console.warn(`  ! couldn't read ${timingPath}: ${e.message}`);
+    processNext();
+  };
+
+  return (task) =>
+    new Promise((resolve, reject) => {
+      queue.push({ task, resolve, reject });
+      processNext();
+    });
+}
+
+const limit = pLimit(CONCURRENCY);
+
+async function renderAll() {
+  const results = [];
+
+  for (const [name, { clips, script, music, musicVolume }] of reels) {
+    const slug = name.replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
+
+    // Attach voiceover audio if it's been generated for this reel. Audio never
+    // SHORTENS a clip (your pacing is the floor); it only extends a clip whose
+    // narration runs longer than its set duration. Use --no-fit to ignore length.
+    const timingPath = `public/vo/${slug}/timing.json`;
+    if (existsSync(timingPath)) {
+      try {
+        const timing = JSON.parse(readFileSync(timingPath, "utf8")).clips || [];
+        const byIndex = new Map(timing.map((t) => [t.index, t]));
+        clips.forEach((clip, n) => {
+          const t = byIndex.get(n + 1);
+          if (t && t.file) {
+            clip.vo = `vo/${slug}/${t.file}`;
+            if (!NOFIT && t.seconds) {
+              clip.durationInSeconds = Math.max(clip.durationInSeconds, Math.round((t.seconds + 0.5) * 100) / 100);
+            }
+          }
+        });
+      } catch (e) {
+        console.warn(`  ! couldn't read ${timingPath}: ${e.message}`);
+      }
+    }
+
+    const propsPath = `out/props/${slug}.json`;
+    const props = { clips, brand: BRAND };
+    if (music) {
+      props.music = music;
+      if (musicVolume != null) props.musicVolume = musicVolume;
+    }
+    writeFileSync(propsPath, JSON.stringify(props, null, 2));
+    const secs = clips.reduce((s, c) => s + c.durationInSeconds, 0);
+
+    // voiceover script with timecodes (uses final, possibly audio-fitted durations)
+    const lines = [`DATA STORY — voiceover script`, `Reel: ${name}   ·   ${secs}s   ·   ${clips.length} clips`, ""];
+    let t = 0;
+    script.forEach((s, n) => {
+      lines.push(`[${tc(t)}]  ${s.text || "(no narration)"}`);
+      t += clips[n].durationInSeconds;
+    });
+    const scriptPath = `out/scripts/${slug}.txt`;
+    writeFileSync(scriptPath, lines.join("\n") + "\n");
+
+    console.log(`\n● ${name} — ${clips.length} clips, ${secs}s -> ${propsPath}\n  script -> ${scriptPath}`);
+
+    if (DRY) continue;
+
+    const out = `out/${slug}.mp4`;
+    results.push(
+      limit(async () => {
+        const start = Date.now();
+        console.log(`  ▶ ${slug}: rendering ${out}`);
+        try {
+          await execAsync(`npx remotion render Video "${out}" --props="${propsPath}"`, {
+            maxBuffer: 50 * 1024 * 1024,
+          });
+          console.log(`  ✓ ${slug}: ${out} (${((Date.now() - start) / 1000).toFixed(1)}s)`);
+          return { ok: true, type: "video", slug, out };
+        } catch (e) {
+          console.error(`  ✗ ${slug}: ${out} failed`);
+          if (e.stderr) console.error(e.stderr.slice(-2000));
+          return { ok: false, type: "video", slug, out, error: e };
+        }
+      })
+    );
+
+    if (COVER) {
+      const cover = `out/${slug}.png`;
+      results.push(
+        limit(async () => {
+          const start = Date.now();
+          console.log(`  ▶ ${slug}: rendering ${cover}`);
+          try {
+            await execAsync(
+              `npx remotion still Video "${cover}" --props="${propsPath}" --frame=15`,
+              { maxBuffer: 50 * 1024 * 1024 }
+            );
+            console.log(`  ✓ ${slug}: ${cover} (${((Date.now() - start) / 1000).toFixed(1)}s)`);
+            return { ok: true, type: "cover", slug, cover };
+          } catch (e) {
+            console.error(`  ✗ ${slug}: ${cover} failed`);
+            if (e.stderr) console.error(e.stderr.slice(-2000));
+            return { ok: false, type: "cover", slug, cover, error: e };
+          }
+        })
+      );
     }
   }
 
-  const propsPath = `out/props/${slug}.json`;
-  const props = { clips, brand: BRAND };
-  if (music) {
-    props.music = music;
-    if (musicVolume != null) props.musicVolume = musicVolume;
-  }
-  writeFileSync(propsPath, JSON.stringify(props, null, 2));
-  const secs = clips.reduce((s, c) => s + c.durationInSeconds, 0);
-
-  // voiceover script with timecodes (uses final, possibly audio-fitted durations)
-  const lines = [`DATA STORY — voiceover script`, `Reel: ${name}   ·   ${secs}s   ·   ${clips.length} clips`, ""];
-  let t = 0;
-  script.forEach((s, n) => {
-    lines.push(`[${tc(t)}]  ${s.text || "(no narration)"}`);
-    t += clips[n].durationInSeconds;
-  });
-  const scriptPath = `out/scripts/${slug}.txt`;
-  writeFileSync(scriptPath, lines.join("\n") + "\n");
-
-  console.log(`\n● ${name} — ${clips.length} clips, ${secs}s -> ${propsPath}\n  script -> ${scriptPath}`);
-
-  if (DRY) continue;
-
-  const out = `out/${slug}.mp4`;
-  console.log(`  rendering ${out} ...`);
-  execSync(`npx remotion render Video "${out}" --props="${propsPath}"`, { stdio: "inherit", shell: true });
-
-  if (COVER) {
-    const cover = `out/${slug}.png`;
-    execSync(`npx remotion still Video "${cover}" --props="${propsPath}" --frame=15`, { stdio: "inherit", shell: true });
-  }
+  return Promise.all(results);
 }
 
-console.log(DRY ? "\n✓ Dry run complete — props in out/props/, scripts in out/scripts/. Drop --dry to render." : "\n✓ Done. Videos in /out, voiceover scripts in out/scripts/.");
+renderAll()
+  .then((results) => {
+    const failures = results.filter((r) => !r.ok);
+    if (failures.length > 0) {
+      console.error(`\n✗ ${failures.length} render job(s) failed:`);
+      for (const f of failures) {
+        const target = f.out || f.cover;
+        console.error(`  - ${f.type} ${target}: ${f.error?.message || "unknown error"}`);
+      }
+      process.exit(1);
+    }
+    console.log(
+      DRY
+        ? "\n✓ Dry run complete — props in out/props/, scripts in out/scripts/. Drop --dry to render."
+        : "\n✓ Done. Videos in /out, voiceover scripts in out/scripts/."
+    );
+  })
+  .catch((err) => {
+    console.error(`\n✗ Unexpected error: ${err.message}`);
+    process.exit(1);
+  });
