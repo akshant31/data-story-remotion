@@ -29,7 +29,7 @@ const args = process.argv.slice(2);
 const file = args.find((a) => !a.startsWith("--")) || "reels.xlsx";
 const DRY = args.includes("--dry");
 const FORCE = args.includes("--force");
-const PROVIDER = (process.env.VO_PROVIDER || "openai").toLowerCase();
+const PROVIDER = (process.env.VO_PROVIDER || "sarvam").toLowerCase();
 
 if (!existsSync(file)) {
   console.error(`✗ Can't find ${file}.`);
