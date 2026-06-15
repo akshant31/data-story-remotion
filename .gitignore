@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build / render outputs
+out/
+dist/
+build/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Generated voiceovers (large audio files)
+public/vo/*
+!public/vo/.gitkeep
+!public/vo/README.md
+
+# Background videos / music (large media assets; add manually if needed)
+public/bg/*
+!public/bg/.gitkeep
+public/music/*
+!public/music/.gitkeep
+!public/music/README.md
+
+# Cache
+.cache/
+*.tmp

@@ -1,0 +1,30 @@
+{
+  "name": "data-story-remotion",
+  "version": "1.0.0",
+  "description": "A data-driven Remotion template for Data Story Reels/Shorts. Add clips by editing src/clips.ts.",
+  "scripts": {
+    "dev": "remotion studio",
+    "render": "remotion render Video out/data-story.mp4",
+    "render:still": "remotion still Video out/cover.png --frame=15",
+    "reels": "node scripts/from-sheet.mjs reels.xlsx",
+    "reels:2weeks": "node scripts/from-sheet.mjs reels-2weeks.xlsx",
+    "reels:dry": "node scripts/from-sheet.mjs reels.xlsx --dry",
+    "voiceover": "node scripts/voiceover.mjs reels-2weeks.xlsx",
+    "voiceover:dry": "node scripts/voiceover.mjs reels-2weeks.xlsx --dry",
+    "upgrade": "remotion upgrade",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.272",
+    "@remotion/google-fonts": "^4.0.272",
+    "music-metadata": "^10.6.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.272",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "typescript": "^5.6.3"
+  }
+}
